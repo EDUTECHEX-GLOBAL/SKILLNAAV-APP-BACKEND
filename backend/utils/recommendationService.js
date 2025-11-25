@@ -197,7 +197,7 @@ const axios = require('axios');
 // Wrapper to call your Python FastAPI AI backend
 async function getPersonalizedRecommendations(studentId, limit = 6) {
   try {
-    const res = await axios.get(`http://10.12.80.38:5000/recommendations/${studentId}?limit=${limit}`);
+    const res = await axios.get(`http://10.12.80.37:5000/recommendations/${studentId}?limit=${limit}`);
     return res.data.recommendations;
   } catch (err) {
     console.error('[RecommendationService] Python AI backend error:', err.message);
