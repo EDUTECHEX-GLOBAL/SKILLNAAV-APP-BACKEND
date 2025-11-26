@@ -342,3 +342,24 @@ def favicon():
 if __name__ == "__main__":
     # Local debug: uvicorn Instructor:app --reload --port 8003
     print(json.dumps(assign_instructors(partner_id=None), default=str))
+
+@app.get("/api/instructors")
+def list_instructors(partnerId: Optional[str] = Query(default=None)):
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+
+    instructors_coll = db[_resolve_collection(db, INSTRUCTORS_COLL, GUESSES["instructors"])]
+    docs = list(instructors_coll.find({}))
+    
+    result = []
+    for ins in docs:
+        result.append({
+            "_id": str(ins.get("_id")),
+            "firstName": ins.get("firstName"),
+            "lastName": ins.get("lastName"),
+            "email": ins.get("email"),
+            "specializations": ins.get("specializations"),
+            "skills": ins.get("skills"),
+        })
+
+    return {"items": result, "count": len(result)}
