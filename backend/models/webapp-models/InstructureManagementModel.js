@@ -31,6 +31,13 @@ const timeSlotSchema = new mongoose.Schema(
 
 const InstructureSchema = new mongoose.Schema(
     {
+        partnerId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Partnerwebapp",
+            required: true,
+            index: true,
+        },
+
         // Personal & Contact
         firstName: { type: String, required: true, trim: true },
         lastName: { type: String, required: true, trim: true },
@@ -88,5 +95,8 @@ const InstructureSchema = new mongoose.Schema(
     },
     { timestamps: true }
 );
+
+// ✅ ADD THIS LINE HERE (BEFORE module.exports)
+InstructureSchema.index({ partnerId: 1, email: 1 }, { unique: true });
 
 module.exports = mongoose.model("Instructure", InstructureSchema);

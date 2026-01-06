@@ -183,18 +183,17 @@ router.delete("/:id", async (req, res) => {
       return res.status(400).json({ message: "Invalid internship ID" });
     }
 
-    // Prefer atomic update to avoid loading the doc and triggering validation on save
-    const updateResult = await InternshipPosting.updateOne(
-      { _id: id },
-      { $set: { deleted: true } }
-    );
+    const internship = await InternshipPosting.findById(id);
 
-    if (updateResult.matchedCount === 0) {
+    if (!internship) {
       return res.status(404).json({ message: "Internship not found" });
     }
 
-    // soft-delete related data (applications, saved jobs)
-    await Application.updateMany({ internshipId: id }, { $set: { deleted: true } });
+    internship.deleted = true;
+    await internship.save();
+
+    await Application.updateMany({ internshipId: id }, { deleted: true });
+    // Remove saved job references from SavedJobs schema
     await SavedJob.deleteMany({ jobId: id });
 
     res.json({ message: "Internship and applications soft deleted" });
@@ -202,6 +201,39 @@ router.delete("/:id", async (req, res) => {
     console.error("Error during deletion:", error);
     res.status(500).json({
       message: "Server Error: Unable to delete the internship",
+      error: error.message,
+    });
+  }
+});
+
+// Restore an internship by setting 'deleted' to false
+router.patch("/:id/restore", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Find the internship by ID
+    const internship = await InternshipPosting.findById(id);
+
+    // Check if the internship exists
+    if (!internship) {
+      return res.status(404).json({ message: "Internship not found" });
+    }
+
+    // Set 'deleted' to false (restore the internship)
+    internship.deleted = false;
+
+    // Save the updated internship document
+    await internship.save();
+
+    // Return the restored internship
+    res.status(200).json({
+      message: "Internship restored successfully",
+      internship,
+    });
+  } catch (error) {
+    console.error("Error restoring internship:", error);
+    res.status(500).json({
+      message: "Server Error: Unable to restore internship",
       error: error.message,
     });
   }
@@ -269,154 +301,73 @@ router.get("/partner/:partnerId", async (req, res) => {
 });
 
 // PUT update an internship posting by ID
-// PUT /api/interns/:id  — robust update with normalization
 router.put("/:id", async (req, res) => {
+  const {
+    jobTitle,
+    companyName,
+    location,
+    jobDescription,
+    startDate,
+    endDateOrDuration,
+    duration,
+    salaryDetails,
+    qualifications,
+    contactInfo,
+    imgUrl,
+    studentApplied,
+    adminApproved,
+    partnerId,
+    country,
+    state,
+    city,
+    sector,
+    classification,            // 🔹 accept new field
+    applicationOpen,
+  } = req.body;
+
   try {
-    const body = req.body || {};
-
-    // Accept either compensationDetails (preferred) or salaryDetails (legacy)
-    const compensation = body.compensationDetails || body.salaryDetails || null;
-
-    // Qualifications: allow array or comma-separated string
-    let qualifications = body.qualifications;
-    if (typeof qualifications === "string") {
-      qualifications = qualifications
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-    }
-
-    // Country normalization: accept "US"/"CA" or full names
-    const COUNTRY_MAP = { US: "United States", CA: "Canada", "United States": "United States", "Canada": "Canada" };
-    let country = body.country;
-    if (country) {
-      const upper = String(country).trim();
-      // try map keys (both code and full name)
-      country = COUNTRY_MAP[upper] || COUNTRY_MAP[upper.toUpperCase()] || country;
-    }
-
-    // Normalize enum-like fields
-    const internshipMode = body.internshipMode
-      ? String(body.internshipMode).toUpperCase()
-      : undefined;
-    const internshipType = body.internshipType
-      ? String(body.internshipType).toUpperCase()
-      : undefined;
-
-    // Compensation normalization (coerce amount)
-    let normalizedComp = null;
-    if (compensation && typeof compensation === "object") {
-      const amtRaw = compensation.amount;
-      const amount =
-        amtRaw === "" || amtRaw === null || amtRaw === undefined
-          ? null
-          : Number(amtRaw);
-      normalizedComp = {
-        type: compensation.type || internshipType || "FREE",
-        amount: Number.isFinite(amount) ? amount : null,
-        currency: compensation.currency || null,
-        frequency: compensation.frequency ? String(compensation.frequency).toUpperCase() : null,
-        benefits: Array.isArray(compensation.benefits) ? compensation.benefits : compensation.benefits ? [String(compensation.benefits)] : undefined,
-        additionalCosts: Array.isArray(compensation.additionalCosts)
-          ? compensation.additionalCosts
-          : undefined,
-      };
-    }
-
-    // Build patch object only with provided values
-    const patch = {};
-
-    const {
-      jobTitle,
-      companyName,
-      location,
-      jobDescription,
-      startDate,
-      endDateOrDuration,
-      duration,
-      contactInfo,
-      imgUrl,
-      studentApplied,
-      adminApproved,
-      partnerId,
-      state,
-      city,
-      sector,
-      classification,
-      applicationOpen,
-    } = body;
-
-    if (jobTitle) patch.jobTitle = jobTitle;
-    if (companyName) patch.companyName = companyName;
-
-    // If location explicitly provided, use it; otherwise compose from city/state/country if any provided
-    if (location && String(location).trim()) {
-      patch.location = String(location).trim();
-    } else if (city || state || country) {
-      patch.location = [city, state, country].filter(Boolean).join(", ");
-    }
-
-    if (country) patch.country = country;
-    if (state) patch.state = state;
-    if (city) patch.city = city;
-    if (jobDescription) patch.jobDescription = jobDescription;
-    if (startDate) patch.startDate = startDate; // let mongoose coerce or validate
-    if (endDateOrDuration) patch.endDateOrDuration = endDateOrDuration;
-    if (duration) patch.duration = duration;
-
-    // compensation — use normalizedComp if present
-    if (normalizedComp) patch.compensationDetails = normalizedComp;
-
-    if (qualifications) patch.qualifications = qualifications;
-    if (sector) patch.sector = sector;
-    if (classification) patch.classification = classification;
-    if (contactInfo) patch.contactInfo = contactInfo;
-    if (imgUrl) patch.imgUrl = imgUrl;
-    if (typeof studentApplied !== "undefined") patch.studentApplied = studentApplied;
-    if (typeof adminApproved !== "undefined") patch.adminApproved = adminApproved;
-    if (partnerId) patch.partnerId = partnerId;
-    if (typeof applicationOpen !== "undefined") patch.applicationOpen = applicationOpen;
-
-    // Accept and normalize internshipMode/type if provided
-    if (internshipMode) patch.internshipMode = internshipMode;
-    if (internshipType) patch.internshipType = internshipType;
-
-    // If patch is empty, return early
-    if (Object.keys(patch).length === 0) {
-      return res.status(400).json({ message: "No updatable fields provided" });
-    }
-
-    // Use runValidators:true to trigger schema validation on update
     const updatedInternship = await InternshipPosting.findByIdAndUpdate(
       req.params.id,
-      patch,
-      { new: true, runValidators: true }
+      {
+        ...(jobTitle && { jobTitle }),
+        ...(companyName && { companyName }),
+        ...((location || city || state || country) && {
+          location: (location || [city, state, country].filter(Boolean).join(", "))
+        }),
+        ...(country && { country }),
+        ...(state && { state }),
+        ...(city && { city }),
+        ...(jobDescription && { jobDescription }),
+        ...(startDate && { startDate }),
+        ...(endDateOrDuration && { endDateOrDuration }),
+        ...(duration && { duration }),
+        ...(salaryDetails && { salaryDetails }),
+        ...(qualifications && { qualifications }),
+        ...(sector && { sector }),
+        ...(classification && { classification }), // 🔹 update if provided
+        ...(contactInfo && { contactInfo }),
+        ...(imgUrl && { imgUrl }),
+        ...(studentApplied !== undefined && { studentApplied }),
+        ...(adminApproved !== undefined && { adminApproved }),
+        ...(partnerId && { partnerId }),
+        ...(applicationOpen !== undefined && { applicationOpen }),
+      },
+      { new: true }
     );
 
-    if (!updatedInternship) {
-      return res.status(404).json({ message: "Internship not found" });
+    if (updatedInternship) {
+      res.json(updatedInternship);
+    } else {
+      res.status(404).json({ message: "Internship not found" });
     }
-
-    return res.json(updatedInternship);
   } catch (error) {
-    console.error("Error updating internship:", error);
-
-    // If Mongoose validation error, include details
-    if (error?.name === "ValidationError") {
-      const errors = Object.keys(error.errors || {}).reduce((acc, k) => {
-        acc[k] = error.errors[k].message;
-        return acc;
-      }, {});
-      return res.status(400).json({ message: "Validation failed", errors });
-    }
-
-    return res.status(500).json({
+    console.error("Error updating internship:", error.message);
+    res.status(500).json({
       message: "Error: Unable to update internship post",
-      error: error.message || String(error),
+      error: error.message,
     });
   }
 });
-
 
 // DELETE an internship posting by ID
 router.delete("/:id", async (req, res) => {

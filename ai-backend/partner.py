@@ -155,7 +155,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "https://www.skillnaav.com", "https://skillnaav.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -169,51 +169,48 @@ async def log_requests(request: Request, call_next):
     return response
 
 
-# --- Helper function ---
+SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "http://localhost:5000")
+CLIENT_URL = os.getenv("CLIENT_URL", "http://localhost:3000")
+
 async def notify_rejection(app_doc):
-    student_id = str(app_doc.get("studentId"))
-    job_title = app_doc.get("jobTitle", "the internship")
-    student_email = app_doc.get("userEmail") or app_doc.get("studentEmail")
+    student_id_raw = app_doc.get("studentId")
+    student_id = str(student_id_raw) if student_id_raw else None
 
-    if not student_email:
-     print(f"[{now()}] ⚠️ No email found for studentId: {student_id}")
-     return
+    job_title = app_doc.get("jobTitle") or "the internship"
+    student_email = app_doc.get("userEmail")
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    if not student_id:
+        print(f"[{now()}] ⚠ missing studentId in app_doc")
+        return
+
+    # Relative internal link
+    relative_link = "/user-main-page?openTab=recommendations&from=auto_reject"
+
+    notif_payload = {
+        "studentId": student_id,
+        "email": student_email,
+        "title": "Application Rejected",
+        "message": f"Your application for {job_title} was rejected. Please check recommendations.",
+        "link": relative_link,
+        "type": "recommendation",
+        "skipEmail": True
+    }
+
+    notifications_url = f"{SERVER_BASE_URL}/api/notifications"
+
+    async with httpx.AsyncClient(timeout=8) as client:
         try:
-            # Update status (Node will send rich recommendations email)
-            await client.put(
-                f"http://localhost:5000/api/applications/{app_doc['_id']}/status",
-                json={"status": "Rejected"}
-            )
-
-            # Create only in-app notification; skip generic email
-            notif_payload = {
-                "studentId": student_id,
-                "email": student_email,
-                "title": "Application Rejected",
-                "message": (
-                    f"Unfortunately, your application for {job_title} was rejected. "
-                    f"But don’t worry—we recommend exploring new opportunities."
-                ),
-                "link": "http://localhost:3000/user-main-page?openTab=recommendations",
-                "skipEmail": True
-            }
-
-            print(f"[{now()}] Posting notification with skipEmail=True → {notif_payload}")
-
-            resp = await client.post(
-                "http://localhost:5000/api/notifications",
-                json=notif_payload
-            )
-
+            resp = await client.post(notifications_url, json=notif_payload)
             if resp.status_code in (200, 201):
-                print(f"[{now()}] ✅ In-app notification created for student {student_id} ({student_email})")
+                print(f"[{now()}] ✅ Notification created for {student_id}")
             else:
-                print(f"[{now()}] ❌ Node API returned {resp.status_code} for student {student_id}: {resp.text}")
+                print(f"[{now()}] ❌ Error {resp.status_code}: {resp.text}")
+                # Retry once
+                resp2 = await client.post(notifications_url, json=notif_payload)
+                print(f"Retry → {resp2.status_code}: {resp2.text}")
 
         except Exception as e:
-            print(f"[{now()}] ❌ Failed notification/email trigger for {student_id}: {e}")
+            print(f"[{now()}] ❌ Failed to contact Node notifications API: {e}")
 
 
 @app.post("/partner/shortlist")

@@ -18,6 +18,7 @@ const {
   getPremiumStatus,
   sendSignupVerificationCode,
   verifySignupOTP,
+  googleAuthUser,
 } = require("../../controllers/userController");
 
 // UPDATED: import authenticate instead of protect
@@ -39,7 +40,14 @@ router.post("/verify-otp-reset-password", verifyOTPAndResetPassword);
 
 // Protected
 router.get("/profile", authenticate, getUserProfile);
-router.put("/profile", authenticate, updateUserProfile);
+router.put(
+  "/profile",
+  authenticate,
+  profilePicUpload.single("profileImage"),
+  updateUserProfile
+);
+
+
 
 router.get("/premium-status", authenticate, getPremiumStatus);
 
@@ -54,4 +62,7 @@ router.post("/send-verification-code", sendSignupVerificationCode);
 
 // Verify OTP
 router.post("/verify-code", verifySignupOTP);
+
+router.post("/google-auth", googleAuthUser);
+
 module.exports = router;

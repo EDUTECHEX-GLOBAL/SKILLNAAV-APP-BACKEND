@@ -76,24 +76,38 @@ const fileToMeta = async (file) => {
 };
 
 const parsePayload = (req) => {
-    // 1) If payload is a text field
-    if (req.body && typeof req.body.payload === "string") {
-        return JSON.parse(req.body.payload);
+    try {
+        // 1) If payload is a text field
+        if (req.body && typeof req.body.payload === "string") {
+            return JSON.parse(req.body.payload);
+        }
+
+        // 2) If payload came as a Blob/file part named "payload"
+        if (req.files && req.files.payload && req.files.payload[0]) {
+            const f = req.files.payload[0];
+            const raw = fs.readFileSync(f.path, "utf8");
+            fs.unlink(f.path, () => { });
+            return JSON.parse(raw);
+        }
+
+        return null;
+    } catch (e) {
+        const err = new Error("Invalid payload JSON.");
+        err.statusCode = 400;
+        throw err;
     }
-    // 2) If payload came as a Blob/file part named "payload"
-    if (req.files && req.files.payload && req.files.payload[0]) {
-        const f = req.files.payload[0];
-        const raw = fs.readFileSync(f.path, "utf8");
-        fs.unlink(f.path, () => { });
-        return JSON.parse(raw);
-    }
-    return null;
 };
 
 exports.createInstructure = async (req, res) => {
     try {
         const payload = parsePayload(req);
         if (!payload) return res.status(400).json({ message: "Missing payload JSON." });
+
+        // ✅ NEW: Partner scope (must come from auth middleware)
+        const partnerId = req.partner?._id;
+        if (!partnerId) {
+            return res.status(401).json({ message: "Partner not authorized." });
+        }
 
         if (payload.availableStart && payload.availableEnd && payload.availableEnd <= payload.availableStart) {
             return res.status(400).json({ message: "End Time must be after Start Time." });
@@ -125,11 +139,16 @@ exports.createInstructure = async (req, res) => {
         const files = {};
         if (!resumeFile) return res.status(400).json({ message: "Resume is required." });
         files.resume = await fileToMeta(resumeFile);
+        if (!files.resume || !files.resume.url) {
+            return res.status(500).json({
+                message: "Resume upload failed. Check AWS_REGION, AWS credentials, and AWS_RESUME_BUCKET.",
+            });
+        }
         if (photoFile) files.photo = await fileToMeta(photoFile);
         if (certFiles.length) files.certificates = (await Promise.all(certFiles.map(fileToMeta))).filter(Boolean);
 
         // Then include ...files when creating the document:
-        const created = await Instructure.create({ ...payload, ...files });
+        const created = await Instructure.create({ ...payload, partnerId, ...files });
 
         // Try sending the notification email to the instructor.
         // Do NOT fail the API if email fails — just log the error.
@@ -160,15 +179,45 @@ exports.createInstructure = async (req, res) => {
         return res.status(201).json(created);
     } catch (err) {
         console.error("createInstructure error:", err);
-        return res.status(500).json({ message: "Failed to create instructure." });
+
+        // ✅ If parsePayload threw a 400
+        if (err?.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+
+        // ✅ Duplicate instructor for same partner (unique index: partnerId + email)
+        if (err?.code === 11000) {
+            return res.status(409).json({
+                message: "Instructor already exists with this email for your account.",
+            });
+        }
+
+        // ✅ Mongoose validation errors
+        if (err?.name === "ValidationError") {
+            return res.status(400).json({ message: err.message });
+        }
+
+        // ✅ Show real error so you can fix AWS/S3 quickly
+        return res.status(500).json({
+            message: err?.message || "Failed to create instructure.",
+        });
     }
 };
 
 exports.listInstructures = async (req, res) => {
     try {
+        const partnerId = req.partner?._id;
+        if (!partnerId) {
+            return res.status(401).json({ message: "Partner not authorized." });
+        }
+
         const { q = "", page = 1, limit = 20 } = req.query;
+
+        const baseFilter = { partnerId };
+
         const query = q
             ? {
+                ...baseFilter,
                 $or: [
                     { firstName: new RegExp(q, "i") },
                     { lastName: new RegExp(q, "i") },
@@ -181,9 +230,10 @@ exports.listInstructures = async (req, res) => {
                     { languages: { $in: [new RegExp(q, "i")] } },
                 ],
             }
-            : {};
+            : baseFilter;
 
         const skip = (Number(page) - 1) * Number(limit);
+
         const [items, total] = await Promise.all([
             Instructure.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
             Instructure.countDocuments(query),
@@ -198,7 +248,12 @@ exports.listInstructures = async (req, res) => {
 
 exports.getInstructure = async (req, res) => {
     try {
-        const item = await Instructure.findById(req.params.id);
+        const partnerId = req.partner?._id;
+        if (!partnerId) {
+            return res.status(401).json({ message: "Partner not authorized." });
+        }
+
+        const item = await Instructure.findOne({ _id: req.params.id, partnerId });
         if (!item) return res.status(404).json({ message: "Instructure not found." });
         return res.json(item);
     } catch (err) {
@@ -229,7 +284,19 @@ exports.updateInstructure = async (req, res) => {
             return res.status(400).json({ message: "End Time must be after Start Time." });
         }
 
-        const updated = await Instructure.findByIdAndUpdate(req.params.id, patch, { new: true });
+        const partnerId = req.partner?._id;
+        if (!partnerId) {
+            return res.status(401).json({ message: "Partner not authorized." });
+        }
+
+        // ✅ extra security: do not allow changing partnerId from payload
+        if (patch.partnerId) delete patch.partnerId;
+
+        const updated = await Instructure.findOneAndUpdate(
+            { _id: req.params.id, partnerId },
+            patch,
+            { new: true }
+        );
         if (!updated) return res.status(404).json({ message: "Instructure not found." });
         return res.json(updated);
     } catch (err) {
@@ -240,7 +307,12 @@ exports.updateInstructure = async (req, res) => {
 
 exports.deleteInstructure = async (req, res) => {
     try {
-        const deleted = await Instructure.findByIdAndDelete(req.params.id);
+        const partnerId = req.partner?._id;
+        if (!partnerId) {
+            return res.status(401).json({ message: "Partner not authorized." });
+        }
+
+        const deleted = await Instructure.findOneAndDelete({ _id: req.params.id, partnerId });
         if (!deleted) return res.status(404).json({ message: "Instructure not found." });
         return res.json({ ok: true });
     } catch (err) {

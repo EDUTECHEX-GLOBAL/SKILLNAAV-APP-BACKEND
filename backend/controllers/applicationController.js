@@ -296,13 +296,16 @@ const updateApplicationStatus = async (req, res) => {
       console.warn(`No email found for studentId: ${application.studentId}`);
     }
 
+    // Read client base URL from env (fall back to localhost)
+    const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+
     // Handle rejection
     if (status === "Rejected") {
       let recommendations = [];
       try {
         recommendations = await getPersonalizedRecommendations(application.studentId, 5);
       } catch (e) {
-        console.error("Failed to fetch personalized recommendations:", e.message);
+        console.error("Failed to fetch personalized recommendations:", e?.message || e);
       }
 
       if (!recommendations.length) {
@@ -312,8 +315,8 @@ const updateApplicationStatus = async (req, res) => {
           .lean();
       }
 
-      // Build HTML list of recommended internships
-      const items = recommendations.map((job) => {
+      // Build HTML list of recommended internships (email: absolute links; in-app: relative)
+      const items = (recommendations || []).map((job) => {
         const stipend = job?.compensationDetails?.amount
           ? ` – Stipend: ${job.compensationDetails.amount} ${job.compensationDetails.currency || ""}`.trim()
           : "";
@@ -321,44 +324,52 @@ const updateApplicationStatus = async (req, res) => {
           ? ` – Apply by: ${new Date(job.applicationDeadline).toDateString()}`
           : "";
         const locOrMode = job?.location || job?.internshipMode || "—";
-        const jobUrl = `http://localhost:3000/user-main-page?openTab=recommendations&openRec=${job?._id}`;
+
+        // Absolute link for emails (so clicking from email navigates to frontend)
+        const jobUrlForEmail = `${CLIENT_URL}/user-main-page?openTab=recommendations&openRec=${job?._id}`;
+
+        // Relative link for in-app notifications (so SPA handles navigation and preserves auth)
+        const jobUrlRelative = `/user-main-page?openTab=recommendations&openRec=${job?._id}`;
+
         return `<li style="margin:6px 0;">
                   <strong>${job?.jobTitle || "Internship"}</strong>${job?.companyName ? ` at ${job.companyName}` : ""} — ${locOrMode}${stipend}${deadline}
-                  — <a href="${jobUrl}" style="color:#2563eb; text-decoration:underline;">View & Apply</a>
+                  — <a href="${jobUrlForEmail}" style="color:#2563eb; text-decoration:underline;">View & Apply</a>
                 </li>`;
       }).join("");
 
-      const listHtml = recommendations.length
+      const listHtml = (recommendations && recommendations.length)
         ? `<p style="margin:12px 0;">Based on your profile, here are some internships:</p>
            <ul style="margin:0; margin-left:20px; padding:0; font-family:Arial,Helvetica,sans-serif; font-size:14px; line-height:20px;" type="disc">
              ${items}
            </ul>
            <p style="margin:12px 0;">
-             <a href="http://localhost:3000/user-main-page?openTab=recommendations" style="color:#2563eb; text-decoration:underline;">View all recommendations</a>
+             <a href="${CLIENT_URL}/user-main-page?openTab=recommendations" style="color:#2563eb; text-decoration:underline;">View all recommendations</a>
            </p>`
         : `<p style="margin:12px 0;">No strong matches right now. Check new roles here:
-             <a href="http://localhost:3000/user-main-page?openTab=recommendations" style="color:#2563eb; text-decoration:underline;">Recommendations</a>.
+             <a href="${CLIENT_URL}/user-main-page?openTab=recommendations" style="color:#2563eb; text-decoration:underline;">Recommendations</a>.
            </p>`;
 
       // Optional: Send in-app notification for rejection with recommendations
-      /*
+      // NOTE: use a relative link for in-app notifications to avoid opening a new tab and losing SPA auth
       try {
+        const inAppLink = `/user-main-page?openTab=recommendations`; // relative
+
         await sendNotification({
           studentId: application.studentId,
           title: "Application Rejected",
           message: recommendations.length
-            ? `We found ${recommendations.length} internships that may suit you.`
+            ? `We found ${recommendations.length} internships that may suit you. Check Recommendations.`
             : "We couldn’t find strong matches right now, but keep checking recommendations!",
-          link: "http://localhost:3000/user-main-page?openTab=recommendations",
+          link: inAppLink,           // relative path so frontend navigates in-app
           type: "recommendation",
         });
         console.log(`✅ In-app rejection notification saved for studentId: ${application.studentId}`);
       } catch (err) {
-        console.error("Failed to save notification:", err.message);
+        // Log but don't block the response — notifications are best-effort
+        console.error("Failed to save in-app notification:", err?.message || err);
       }
-      */
 
-      // Send rejection email with recommendations if email present
+      // Send rejection email with recommendations if email present (emails need absolute URLs)
       if (student.email) {
         try {
           const emailContent = `
@@ -374,7 +385,7 @@ const updateApplicationStatus = async (req, res) => {
           );
           console.log(`✅ Rejection email sent to ${student.email}`);
         } catch (err) {
-          console.error("Failed to send rejection email:", err.message);
+          console.error("Failed to send rejection email:", err?.message || err);
         }
       }
     }
@@ -389,6 +400,7 @@ const updateApplicationStatus = async (req, res) => {
     return res.status(500).json({ error: "Server error" });
   }
 };
+
 
 
 

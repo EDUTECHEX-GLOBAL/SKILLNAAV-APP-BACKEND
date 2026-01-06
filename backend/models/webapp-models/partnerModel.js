@@ -8,17 +8,17 @@ const partnerwebappSchema = mongoose.Schema(
     password: { type: String, required: true },
     universityName: { type: String, required: true },
     institutionId: { type: String, required: true },
-    
-    // KEEP adminApproved for backward compatibility
+
+    profileImage: { type: String },
+
     adminApproved: { type: Boolean, default: false },
-    
-    // ADD status field for richer state management
+
     status: {
       type: String,
       enum: ["Pending", "Approved", "Rejected"],
-      default: "Pending"
+      default: "Pending",
     },
-    
+
     planType: {
       type: String,
       enum: ["Freemium", "Premium Basic", "Premium Plus"],
@@ -39,6 +39,12 @@ const partnerwebappSchema = mongoose.Schema(
     timestamps: true,
   }
 );
+
+// Index to speed up expiry queries
+partnerwebappSchema.index({ premiumExpiration: 1 });
+
+// If you want to be explicit (email already has unique:true)
+partnerwebappSchema.index({ email: 1 }, { unique: true });
 
 // Hash password before saving
 partnerwebappSchema.pre("save", async function (next) {

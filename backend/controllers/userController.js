@@ -4,6 +4,30 @@ const generateToken = require("../utils/generateToken");
 const notifyUser = require("../utils/notifyUser");
 const { profilePicUpload } = require('../utils/multer');
 const EmailVerification = require("../models/webapp-models/EmailVerificationModel");
+const LoginSession = require("../models/webapp-models/LoginSession")
+const { OAuth2Client } = require("google-auth-library");
+const client = new OAuth2Client(process.env.GOOGLE_SIGNUP_CLIENT_ID);
+
+
+
+// helper: expire subscription if expiration date is in the past or now
+async function expireIfNeeded(user) {
+  if (!user) return false;
+
+  // normalize stored value to Date (handles string or Date)
+  const exp = user.premiumExpiration ? new Date(user.premiumExpiration) : null;
+
+  // if premiumExpiration exists and is a valid Date and <= now -> expire
+  if (exp && !isNaN(exp.getTime()) && exp.getTime() <= Date.now()) {
+    user.isPremium = false;
+    user.planType = "Free";
+    user.premiumExpiration = null;
+    await user.save();
+    return true;
+  }
+
+  return false;
+}
 
 // Get user profile
 const getUserProfile = asyncHandler(async (req, res) => {
@@ -14,13 +38,8 @@ const getUserProfile = asyncHandler(async (req, res) => {
     throw new Error("User not found");
   }
 
-  // Expiration check and update user premium fields
-  if (user.isPremium && user.premiumExpiration && user.premiumExpiration < new Date()) {
-    user.isPremium = false;
-    user.planType = "Free";
-    user.premiumExpiration = null;
-    await user.save();
-  }
+  // Expire if needed (uses normalized date check)
+  await expireIfNeeded(user);
 
   const userProfile = {
     _id: user._id,
@@ -54,6 +73,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
   res.json(userProfile);
 });
+
 
 // Helper function to check required fields
 const areFieldsFilled = (fields) => fields.every((field) => field);
@@ -142,33 +162,55 @@ const registerUser = asyncHandler(async (req, res) => {
     country,
     city,
     postalCode,
-    zip,        // will map to postalCode if provided
+    zip,
     address,
   } = req.body;
 
-  // Check for required fields
-  if (
-    !areFieldsFilled([
-      name,
-      email,
-      password,
-      confirmPassword,
-      universityName,
-      dob,
-      educationLevel,
-      fieldOfStudy,
-      desiredField,
-      linkedin,
-    ])
-  ) {
-    res.status(400);
-    throw new Error("Please fill all required fields.");
-  }
+  // Detect Google signup (no password provided)
+  const isGoogleSignup = !password && !confirmPassword;
 
-  // Check if passwords match
-  if (password !== confirmPassword) {
-    res.status(400);
-    throw new Error("Passwords do not match.");
+  // Required fields for Google signup
+  const requiredGoogleFields = [
+    name,
+    email,
+    universityName,
+    dob,
+    educationLevel,
+    fieldOfStudy,
+    desiredField,
+    linkedin,
+  ];
+
+  // Required fields for normal signup
+  const requiredNormalFields = [
+    name,
+    email,
+    password,
+    confirmPassword,
+    universityName,
+    dob,
+    educationLevel,
+    fieldOfStudy,
+    desiredField,
+    linkedin,
+  ];
+
+  // Validate
+  if (isGoogleSignup) {
+    if (!areFieldsFilled(requiredGoogleFields)) {
+      res.status(400);
+      throw new Error("Please fill all required fields for Google sign-up.");
+    }
+  } else {
+    if (!areFieldsFilled(requiredNormalFields)) {
+      res.status(400);
+      throw new Error("Please fill all required fields.");
+    }
+
+    if (password !== confirmPassword) {
+      res.status(400);
+      throw new Error("Passwords do not match.");
+    }
   }
 
   // Check if the user already exists
@@ -178,25 +220,27 @@ const registerUser = asyncHandler(async (req, res) => {
     throw new Error("User already exists");
   }
 
-  // Check if a profile picture was uploaded
-  if (!req.file) {
-    res.status(400);
-    throw new Error("Profile picture is required.");
+  // Profile picture is required ONLY for normal signup
+  let profilePicUrl = null;
+
+  if (!isGoogleSignup) {
+    if (!req.file) {
+      res.status(400);
+      throw new Error("Profile picture is required.");
+    }
+    profilePicUrl = req.file.location;
+  } else {
+    profilePicUrl = req.body.profileImage || null;
   }
 
-  // Get the S3 URL of the uploaded profile picture
-  const profilePicUrl = req.file.location;
-
-  // Clean arrays properly
   const parsedSkills = cleanArray(skills);
   const parsedInterests = cleanArray(interests);
   const parsedLocations = cleanArray(preferredLocations);
 
-  // Create new user
   const user = await Userwebapp.create({
     name,
     email,
-    password,
+    password: isGoogleSignup ? undefined : password,
     universityName,
     dob: new Date(dob),
     educationLevel,
@@ -213,41 +257,23 @@ const registerUser = asyncHandler(async (req, res) => {
     postalCode: postalCode || zip || "",
     address,
     profileImage: profilePicUrl,
+    isGoogleUser: isGoogleSignup,
     status: "Pending",
     adminApproved: false,
+    isActive: false,
     premiumExpiration: null,
   });
 
-  if (user) {
-    res.status(201).json({
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      universityName: user.universityName,
-      dob: user.dob,
-      educationLevel: user.educationLevel,
-      fieldOfStudy: user.fieldOfStudy,
-      desiredField: user.desiredField,
-      linkedin: user.linkedin,
-      portfolio: user.portfolio,
-      skills: user.skills,
-      interests: user.interests,
-      preferredLocations: user.preferredLocations,
-      state: user.state,
-      country: user.country,
-      city: user.city,
-      postalCode: user.postalCode,
-      address: user.address,
-      profileImage: user.profileImage,
-      token: generateToken(user._id),
-      adminApproved: user.adminApproved,
-      status: user.status,
-    });
-  } else {
-    res.status(400);
-    throw new Error("Error occurred while registering user.");
-  }
+  res.status(201).json({
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    token: generateToken(user._id),
+    status: user.status,
+    adminApproved: user.adminApproved,
+  });
 });
+
 
 // Helper: clean arrays (remove empty strings, trim values)
 const cleanArray = (arr) =>
@@ -257,15 +283,14 @@ const cleanArray = (arr) =>
       ? arr.split(",").map((x) => x.trim()).filter(Boolean)
       : [];
 
-// Authenticate user (login) - UPDATED VERSION
+// Authenticate user (login) - UPDATED WITH SESSION ID
 const authUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
   const user = await Userwebapp.findOne({ email });
 
-  if (user && await user.matchPassword(password)) {
-    // ✅ REMOVED: Rejection check - allow rejected users to login
-    // ✅ REMOVED: Pending approval check - allow pending users to login
+ if (user && (user.isGoogleUser || await user.matchPassword(password))) {
+
 
     // Only check for school-admin restrictions
     if (user.schoolAdmin && !user.isActive) {
@@ -273,16 +298,20 @@ const authUser = asyncHandler(async (req, res) => {
       throw new Error("Your account has been restricted by your school administrator. Please contact them.");
     }
 
-    // 🔎 Expiration check
-    if (user.isPremium && user.premiumExpiration && user.premiumExpiration < new Date()) {
-      user.isPremium = false;
-      user.planType = "Free";
-      user.premiumExpiration = null;
-      await user.save();
-    }
+    // Expire if needed
+    await expireIfNeeded(user);
 
+    // Generate token
     const token = generateToken(user._id);
 
+    // 🔥 CREATE SESSION RECORD
+    const session = await LoginSession.create({
+      studentId: user._id,
+      schoolAdmin: user.schoolAdmin,
+      loginAt: new Date(),
+    });
+
+    // 🔥 Return session ID to frontend
     res.json({
       _id: user._id,
       name: user.name,
@@ -299,93 +328,106 @@ const authUser = asyncHandler(async (req, res) => {
       planType: user.planType,
       premiumExpiration: user.premiumExpiration,
       token,
+      sessionId: session._id,   // 👈 VERY IMPORTANT
       adminApproved: user.adminApproved,
       status: user.status,
-      // Add this field to easily check approval status in frontend
       isFullyApproved: user.status === "Approved" && user.adminApproved,
     });
+
   } else {
     res.status(400);
     throw new Error("Invalid email or password.");
   }
 });
 
+
+
+// Update user profile
 // Update user profile
 const updateUserProfile = asyncHandler(async (req, res) => {
-  const user = await Userwebapp.findById(req.user._id);
+  console.log("BODY RECEIVED ===>", req.body);
+  console.log("FILE RECEIVED ===>", req.file);
 
+  // 🚫 Block dangerous fields
+  delete req.body.password;
+  delete req.body.confirmPassword;
+  delete req.body.isPremium;
+  delete req.body.planType;
+  delete req.body.premiumExpiration;
+  delete req.body.adminApproved;
+  delete req.body.status;
+
+  const user = await Userwebapp.findById(req.user._id);
   if (!user) {
     res.status(404);
     throw new Error("User not found.");
   }
 
-  // Update scalar fields
-  user.name = req.body.name || user.name;
-  user.email = req.body.email || user.email;
-  user.universityName = req.body.universityName || user.universityName;
-  user.dob = req.body.dob ? new Date(req.body.dob) : user.dob;
-  user.educationLevel = req.body.educationLevel || user.educationLevel;
-  user.fieldOfStudy = req.body.fieldOfStudy || user.fieldOfStudy;
-  user.desiredField = req.body.desiredField || user.desiredField;
-  user.linkedin = req.body.linkedin || user.linkedin;
-  user.portfolio = req.body.portfolio || user.portfolio;
-  user.financialStatus = req.body.financialStatus || user.financialStatus;
-  user.state = req.body.state || user.state;
-  user.country = req.body.country || user.country;
-  user.city = req.body.city || user.city;
-  user.postalCode = req.body.postalCode || req.body.zip || user.postalCode;
-  user.address = req.body.address || user.address;
-  user.currentGrade = req.body.currentGrade || user.currentGrade;
-  user.gradePercentage = req.body.gradePercentage || user.gradePercentage;
-  user.isPremium = req.body.isPremium || user.isPremium;
+  const fields = [
+    "name",
+    "email",
+    "universityName",
+    "educationLevel",
+    "fieldOfStudy",
+    "desiredField",
+    "linkedin",
+    "portfolio",
+    "financialStatus",
+    "state",
+    "country",
+    "city",
+    "address",
+    "currentGrade",
+    "gradePercentage",
+  ];
 
-  // Clean arrays properly
-  if (req.body.skills !== undefined) {
-    user.skills = cleanArray(req.body.skills);
-  }
-  if (req.body.interests !== undefined) {
-    user.interests = cleanArray(req.body.interests);
-  }
-  if (req.body.preferredLocations !== undefined) {
-    user.preferredLocations = cleanArray(req.body.preferredLocations);
+  fields.forEach((field) => {
+    if (req.body[field] !== undefined && req.body[field] !== "") {
+      user[field] = req.body[field];
+    }
+  });
+
+  if (req.body.dob) {
+    user.dob = new Date(req.body.dob);
   }
 
-  // Profile image
-  user.profileImage = req.body.profileImage || user.profileImage;
-
-  if (req.body.password) {
-    user.password = req.body.password;
+  if (req.body.zip || req.body.postalCode) {
+    user.postalCode = req.body.zip || req.body.postalCode;
   }
+
+  const arrayFields = ["skills", "interests", "preferredLocations"];
+  arrayFields.forEach((field) => {
+    if (req.body[field] !== undefined) {
+      if (Array.isArray(req.body[field])) {
+        user[field] = req.body[field];
+      } else if (typeof req.body[field] === "string") {
+        user[field] = req.body[field]
+          .split(",")
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+    }
+  });
+
+  if (req.file) {
+    user.profileImage = req.file.location;
+  }
+
+  // if (user.isGoogleUser) {
+  //   user.adminApproved = true;
+  //  user.status = "Approved";
+  //  user.isActive = true;
+  // }
 
   const updatedUser = await user.save();
 
-  res.json({
+  return res.json({
     _id: updatedUser._id,
-    name: updatedUser.name,
-    email: updatedUser.email,
-    universityName: updatedUser.universityName,
-    dob: updatedUser.dob,
-    educationLevel: updatedUser.educationLevel,
-    fieldOfStudy: updatedUser.fieldOfStudy,
-    desiredField: updatedUser.desiredField,
-    linkedin: updatedUser.linkedin,
-    portfolio: updatedUser.portfolio,
-    skills: updatedUser.skills,
-    interests: updatedUser.interests,
-    preferredLocations: updatedUser.preferredLocations,
-    financialStatus: updatedUser.financialStatus,
-    state: updatedUser.state,
-    country: updatedUser.country,
-    city: updatedUser.city,
-    postalCode: updatedUser.postalCode,
-    address: updatedUser.address,
-    currentGrade: updatedUser.currentGrade,
-    gradePercentage: updatedUser.gradePercentage,
-    planType: updatedUser.planType,
-    profileImage: updatedUser.profileImage,
-    token: generateToken(updatedUser._id),
+    message: "Profile updated successfully",
   });
 });
+
+
 
 // Get all users with additional fields
 const getAllUsers = asyncHandler(async (req, res) => {
@@ -455,36 +497,30 @@ const rejectUser = asyncHandler(async (req, res) => {
 });
 
 // Get premium status
+// Get premium status
 const getPremiumStatus = asyncHandler(async (req, res) => {
-  try {
-    let user = await Userwebapp.findById(req.user._id);
 
-    if (!user) {
-      res.status(404);
-      throw new Error('User not found');
-    }
+  let user = await Userwebapp.findById(req.user._id).select("-password");
 
-    // Expiration check and update user premium fields
-    if (user.isPremium && user.premiumExpiration && user.premiumExpiration < new Date()) {
-      user.isPremium = false;
-      user.planType = "Free";
-      user.premiumExpiration = null;
-      await user.save();
-    }
-
-    const statusData = {
-      isPremium: user.isPremium,
-      planType: user.planType,
-      premiumExpiration: user.premiumExpiration,
-    };
-
-    res.status(200).json(statusData);
-
-  } catch (error) {
-    console.error('Error fetching premium status:', error);
-    res.status(500).json({ message: 'Error fetching premium status' });
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found",
+    });
   }
+
+  // Automatically expire premium if needed
+  await expireIfNeeded(user);
+
+  // Fetch updated values after expiration logic
+  const freshUser = await Userwebapp.findById(req.user._id).select("-password");
+
+  return res.status(200).json({
+    success: true,               // 🔥 REQUIRED FOR FRONTEND
+    user: freshUser              // 🔥 Must remain as "user"
+  });
 });
+
 
 // Send verification code for signup
 const sendSignupVerificationCode = asyncHandler(async (req, res) => {
@@ -521,8 +557,9 @@ const sendSignupVerificationCode = asyncHandler(async (req, res) => {
 });
 
 // Verify the signup OTP
+// Verify the signup OTP
 const verifySignupOTP = asyncHandler(async (req, res) => {
-  const { email, otp } = req.body;
+  const { email, otp, password } = req.body;
 
   const record = await EmailVerification.findOne({ email });
 
@@ -533,8 +570,107 @@ const verifySignupOTP = asyncHandler(async (req, res) => {
 
   await EmailVerification.deleteOne({ email });
 
-  res.status(200).json({ success: true, message: "Email verified successfully." });
+  let user = await Userwebapp.findOne({ email });
+
+  if (!user) {
+    user = await Userwebapp.create({
+      email,
+      password,                 // ✅ SAVE PASSWORD HERE
+      status: "Pending",
+      adminApproved: false,
+      isActive: false,
+      isGoogleUser: false,
+    });
+  }
+
+  const token = generateToken(user._id);
+
+  res.status(200).json({
+    success: true,
+    token,
+    message: "Email verified successfully",
+  });
 });
+
+
+
+const googleAuthUser = asyncHandler(async (req, res) => {
+  const { idToken } = req.body;
+
+  // Verify Google token
+  const ticket = await client.verifyIdToken({
+    idToken,
+    audience: process.env.GOOGLE_SIGNUP_CLIENT_ID,
+  });
+
+  const payload = ticket.getPayload();
+  const { sub, email, name, picture } = payload;
+
+  // 1️⃣ Lookup by Google ID first
+  let user = await Userwebapp.findOne({ googleId: sub });
+
+  // 2️⃣ If not found, lookup by email (for users who registered manually earlier)
+  if (!user) {
+    user = await Userwebapp.findOne({ email });
+  }
+
+  // 3️⃣ If user exists → update googleId & login
+  if (user) {
+    if (!user.googleId) {
+      user.googleId = sub;
+      user.isGoogleUser = true;
+      await user.save();
+    }
+
+    const token = generateToken(user._id);
+
+    return res.json({
+      token,
+      _id: user._id,
+      email: user.email,
+      name: user.name,
+      profileImage: user.profileImage,
+      isGoogleUser: true,
+
+      // Check if profile is complete  
+      needsProfileCompletion:
+        !user.universityName ||
+        !user.dob ||
+        !user.educationLevel ||
+        !user.fieldOfStudy ||
+        !user.country ||
+        !user.desiredField ||
+        !user.linkedin ||
+        !user.profileImage,
+    });
+  }
+
+  // 4️⃣ If no user exists → create a new one
+  user = await Userwebapp.create({
+    googleId: sub,
+    email,
+    name,
+    profileImage: picture,
+    isGoogleUser: true,
+    status: "Pending",
+    adminApproved: false,
+    isActive: false,
+  });
+
+  const token = generateToken(user._id);
+
+  return res.json({
+    token,
+    _id: user._id,
+    email,
+    name,
+    profileImage: picture,
+    isGoogleUser: true,
+    needsProfileCompletion: true,
+  });
+});
+
+
 
 module.exports = {
   registerUser,
@@ -550,5 +686,6 @@ module.exports = {
   getPremiumStatus,
   sendSignupVerificationCode,
   verifySignupOTP,
+  googleAuthUser,
 };
 

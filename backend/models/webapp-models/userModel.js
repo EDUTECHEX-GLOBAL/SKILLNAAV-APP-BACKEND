@@ -3,24 +3,37 @@ const bcrypt = require("bcrypt");
 
 const userwebappSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
+    name: { type: String },
+
     email: { type: String, required: true, unique: true, trim: true },
-    password: { type: String, required: true },
+
+    // 🔥 Password is optional for Google users
+    password: { type: String, required: false },
+
+    // OTP + Email verification for normal signup
     otp: { type: String },
     otpExpiration: { type: Date },
-    universityName: { type: String, required: true },
-    dob: { type: String, required: true },
-    educationLevel: { type: String, required: true },
-    fieldOfStudy: { type: String, required: true },
-    desiredField: { type: String, required: true },
-    linkedin: { type: String, required: true },
-    portfolio: { type: String },
-    profileImage: { type: String, required: true },
 
+    // 🔥 These fields are NOT required at account creation for Google users
+    universityName: { type: String },
+    dob: { type: String },
+    educationLevel: { type: String },
+    fieldOfStudy: { type: String },
+    desiredField: { type: String },
+    linkedin: { type: String },
+    portfolio: { type: String },
+    profileImage: { type: String },
+
+    // Arrays
     skills: [{ type: String, trim: true }],
     interests: [{ type: String, trim: true }],
     preferredLocations: [{ type: String, trim: true }],
 
+    // 🔥 Google OAuth fields
+    googleId: { type: String, default: null },
+    isGoogleUser: { type: Boolean, default: false },
+
+    // Optional fields for later updates
     financialStatus: { type: String },
     state: { type: String },
     country: { type: String },
@@ -29,50 +42,61 @@ const userwebappSchema = new mongoose.Schema(
     address: { type: String },
     currentGrade: { type: String },
     gradePercentage: { type: String },
-    adminApproved: {
-      type: Boolean,
-      default: false
-    },
 
-    // FIX: Replace adminApproved with status field
+    // Admin workflow
+    adminApproved: { type: Boolean, default: false },
+
     status: {
       type: String,
       enum: ["Pending", "Approved", "Rejected"],
-      default: "Pending"
+      default: "Pending",
     },
 
     isActive: { type: Boolean, default: false },
+
+    // Premium fields
     isPremium: { type: Boolean, default: false },
     planType: {
       type: String,
       enum: ["Free", "Premium Basic", "Premium Plus"],
-      default: "Free"
+      default: "Free",
     },
     premiumExpiration: { type: Date, default: null },
+
     schoolAdmin: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SchoolAdmin",
     },
-    careerChatUsage: {
-      type: Number,
-      default: 0
-    },
+
+    careerChatUsage: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
 
-// Hash password before saving
+
+
+// 🔥 PASSWORD HASHING — safe for Google users
 userwebappSchema.pre("save", async function (next) {
+  // Skip hashing if no password exists
+  if (!this.password) return next();
+
+  // Hash only when password is modified
   if (!this.isModified("password")) return next();
+
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
   next();
 });
 
-// Compare hashed password with entered password
+
+
+// 🔥 Compare hashed password (Google users skip this)
 userwebappSchema.methods.matchPassword = async function (enteredPassword) {
+  if (!this.password) return false; // Google users don't login via password
   return await bcrypt.compare(enteredPassword, this.password);
 };
+
+
 
 const Userwebapp = mongoose.model("Userwebapp", userwebappSchema);
 module.exports = Userwebapp;

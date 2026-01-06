@@ -53,6 +53,7 @@ FLOW CONTEXT:
     { key: "partner-accounts", label: "Partner Accounts", description: "Create and manage partner organizations." },
     { key: "internship-posts", label: "Internship Posts", description: "Create, edit, publish, or close internship postings." },
     { key: "applications", label: "Applications", description: "Review and manage applicants: View Applications, Shortlist, Shortlisted Resumes." },
+    { key: "instructor-management", label: "Instructor Management", description: "Create, view, edit, and delete instructors. New instructor creation requires Email OTP verification and Resume upload; Photo/Certificates optional. Manage availability (days/time) and preferable time slots." },
     { key: "offer-templates", label: "Offer Templates", description: "Create and manage Offer Letter templates; upload a background image and reuse when sending offers." },
     { key: "stipend-details", label: "Stipend Details", description: "See stipend information like 'Student Pays' amounts and currency across internships." },
     { key: "profile", label: "Profile", description: "Update organization & personal details, change password, and profile photo." },
@@ -111,6 +112,36 @@ FLOW CONTEXT:
         }
       }
 
+      // Instructor Management
+      if (it.key.includes("instructor") || labelLow.includes("instructor")) {
+        bits.push(
+          "instructor", "instructors",
+          "teacher", "teachers",
+          "tutor", "tutors",
+          "mentor", "mentors",
+          "trainer", "trainers",
+
+          "instructor management",
+          "add instructor", "create instructor", "new instructor",
+          "edit instructor", "update instructor",
+          "view instructor", "instructor details",
+          "delete instructor", "remove instructor",
+
+          // OTP flow
+          "otp", "email otp", "verify email", "send otp", "verify otp",
+
+          // Availability + slots
+          "availability", "available days", "available start", "available end",
+          "time slot", "time slots", "preferable slots", "preferable time slots",
+
+          // Documents
+          "resume", "profile photo", "photo", "certificates",
+
+          // Assignment
+          "assigned internship", "assign internship", "notes"
+        );
+      }
+
       // Stipend Details
       if (it.key.includes("stipend") || labelLow.includes("stipend")) {
         bits.push(
@@ -162,8 +193,8 @@ FLOW CONTEXT:
   }
 
   // Platform intro handler
-if (/(what\s+is\s+(skillnaav|this\s+platform)|about\s+(skillnaav|the\s+platform))/i.test(msgLow)) {
-  return `Our Vision:
+  if (/(what\s+is\s+(skillnaav|this\s+platform)|about\s+(skillnaav|the\s+platform))/i.test(msgLow)) {
+    return `Our Vision:
 \nAligning with the Canadian Vision Priorities, Skillnaav's mission is to empower Canadians with early opportunities, diverse career paths, and access to quality internships while supporting lifelong learning and skills development.
 
 What Skillnaav is about:
@@ -179,12 +210,49 @@ What Skillnaav is about:
 • Aerospace focus: offer specialized programs and internships that foster innovation and exploration.
 
 If you want help using the Partner dashboard, ask about a specific tab, e.g., "What is Applications?", "How do I create an Offer Template?", or "Where can I see Stipend Details?"`;
-}
+  }
 
   if (!inScope) {
     return OFF_SCOPE_REPLY;
   }
 
+  const INSTRUCTOR_MANAGEMENT_GUIDE = `
+INSTRUCTOR MANAGEMENT (How it works in this dashboard):
+- List & search: The Instructor Management page shows instructors and supports searching (name/email/phone/skills etc.).
+- Add a new instructor (creation workflow):
+  1) Email OTP verification is REQUIRED before saving a NEW instructor.
+     - Send OTP to the instructor email, enter OTP, verify.
+     - If OTP is not verified, creation is blocked.
+  2) Resume upload is REQUIRED for new instructor creation.
+     - Photo is optional.
+     - Certificates are optional (multiple).
+  3) Availability:
+     - Select available days.
+     - Set Start Time and End Time (End must be after Start).
+     - Preferable time slots can be added in 24-hour format (HH:MM).
+  4) Save:
+     - The instructor is saved under the current partner scope (partnerId).
+     - Same email cannot be used twice for the same partner (unique per partner).
+     - After creation, notification emails may be sent (non-blocking).
+
+- View details:
+  - "Instructor Details" modal shows sections: Personal & Contact, Professional & Teaching, Availability, Compensation, Compliance & Documents, Assignment.
+  - Resume/Photo/Certificates open via links (stored as URLs).
+
+- Edit instructor:
+  - You can update fields and optionally replace Resume/Photo/Certificates.
+  - End Time must still be after Start Time.
+
+- Delete instructor:
+  - Deletion uses a two-step confirmation:
+    1) "Are you sure?"
+    2) "Confirm one last time" (final irreversible)
+  - If deletion fails with 401, the session/token is missing or expired (re-login required).
+
+- Optional auto-assignment (if enabled in your setup):
+  - A backend service can auto-assign instructors to schedule sessions based on availability window and load balancing,
+    writing instructor / instructorName into timetable sessions.
+`.trim();
 
   const SYSTEM_PROMPT = `
 <<SYS>>
@@ -198,6 +266,8 @@ Rules:
 
 Available Partner Dashboard sections (derived from the sidebar):
 ${featuresBullet}
+
+${INSTRUCTOR_MANAGEMENT_GUIDE}
 
 Partner context (for tone only; do not expose PII verbatim in answers):
 ${partnerContext}

@@ -48,16 +48,23 @@ router.post("/paypal/order", async (req, res) => {
 
 
 // Verify and capture payment
+// router.post("/paypal/verify", ...)
 router.post("/paypal/verify", async (req, res) => {
   const { orderID, userId, planType, amount, email, duration } = req.body;
   if (!orderID || !userId || !planType || !amount || !email || !duration) {
     return res.status(400).json({ success: false, message: "Missing required fields" });
   }
 
+  const days = parseInt(duration, 10);
+  if (!Number.isFinite(days) || days <= 0) {
+    return res.status(400).json({ success: false, message: "Invalid duration" });
+  }
+
   try {
     const accessToken = await getAccessToken();
 
-    const capture = await axios.post(
+    // Capture the PayPal order
+    await axios.post(
       `${process.env.PAYPAL_API}/v2/checkout/orders/${orderID}/capture`,
       {},
       {
@@ -68,8 +75,17 @@ router.post("/paypal/verify", async (req, res) => {
       }
     );
 
-    const premiumExpiration = new Date();
-    premiumExpiration.setDate(premiumExpiration.getDate() + parseInt(duration)); // ✅ days instead of months
+    // Create Payment record (save the expiration we'll apply to user)
+    const now = Date.now();
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    // Compute premiumExpiration by extending existing expiry if still in future
+    const userDoc = await User.findById(userId);
+    let baseTime = now;
+    if (userDoc && userDoc.premiumExpiration && new Date(userDoc.premiumExpiration).getTime() > now) {
+      baseTime = new Date(userDoc.premiumExpiration).getTime();
+    }
+    const premiumExpiration = new Date(baseTime + days * MS_PER_DAY);
 
     const payment = new Payment({
       userId,
@@ -83,37 +99,47 @@ router.post("/paypal/verify", async (req, res) => {
     });
     await payment.save();
 
+    // Update user with new premium flags and expiry, return fresh user (without password)
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       {
-        isPremium: true,
-        planType,
-        premiumExpiration,
+        $set: {
+          isPremium: true,
+          planType,
+          premiumExpiration,
+        }
       },
-      { new: true }
-    );
+      { new: true, runValidators: true }
+    ).select("-password");
 
     if (!updatedUser) {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
+    // Return consistent wrapper: { user: ... }
     return res.json({ success: true, user: updatedUser });
   } catch (err) {
-    if (err.response) {
-      console.error("❌ FULL ERROR in /paypal/verify:", err.response.data);
-      return res.status(500).json({
-        success: false,
-        message: err.message,
-        details: err.response.data,
-      });
-    }
-    return res.status(500).json({
+  const issue = err.response?.data?.details?.[0]?.issue;
+
+  // 🔥 REQUIRED BY PAYPAL
+  if (issue === "INSTRUMENT_DECLINED") {
+    return res.status(400).json({
       success: false,
-      message: err.message,
-      details: null,
+      retry: true,
+      details: err.response.data,
     });
   }
+
+  console.error("❌ FULL ERROR in /paypal/verify:", err.response?.data || err);
+
+  return res.status(500).json({
+    success: false,
+    message: "PayPal capture failed",
+    details: err.response?.data || null,
+  });
+}
 });
+
 
 
 module.exports = router;

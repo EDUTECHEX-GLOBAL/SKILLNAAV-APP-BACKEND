@@ -14,6 +14,9 @@ const {
     verifyInstructorEmailOtp,
 } = require("../../controllers/InstructureManagementController");
 
+const { partnerProtect } = require("../../middlewares/Partnerauthmiddleware");
+
+
 const router = express.Router();
 
 // ensure uploads dir exists
@@ -40,7 +43,10 @@ const fields = upload.fields([
     { name: "certificates", maxCount: 20 },
 ]);
 
-// OTP endpoints first (optional but future-proof)
+// ✅ ADD THIS LINE
+router.use(partnerProtect);
+
+// OTP endpoints
 router.post("/otp/start", startInstructorEmailOtp);
 router.post("/otp/verify", verifyInstructorEmailOtp);
 
@@ -52,5 +58,3 @@ router.put("/:id", fields, updateInstructure);
 router.delete("/:id", deleteInstructure);
 
 module.exports = router;
-
-//

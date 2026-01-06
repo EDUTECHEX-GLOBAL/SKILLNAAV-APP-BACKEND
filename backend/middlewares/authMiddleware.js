@@ -1,68 +1,84 @@
-// middlewares/authMiddleware.js
 const jwt = require("jsonwebtoken");
 const asyncHandler = require("express-async-handler");
 const Userwebapp = require("../models/webapp-models/userModel");
 const Partnerwebapp = require("../models/webapp-models/partnerModel");
 
-const getTokenFromReq = (req) => {
-  // 1) Authorization: Bearer <token>
-  const auth = req.headers.authorization || req.headers.Authorization;
-  if (auth && typeof auth === "string" && auth.startsWith("Bearer ")) {
-    const t = auth.split(" ")[1];
-    if (t && t !== "undefined" && t !== "null") return t;
-  }
-  // 2) Cookie
-  if (req.cookies?.token) return req.cookies.token;
-  // 3) Query (useful for websockets/webhooks if you choose)
-  if (req.query?.token) return req.query.token;
-  return null;
-};
-
-// Authenticate user or partner
 const authenticate = asyncHandler(async (req, res, next) => {
-  // Skip auth for preflight OPTIONS
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  let token;
 
-  const token = getTokenFromReq(req);
-  if (!token) {
-    return res.status(401).json({ message: "Not authorized, no token" }); // <-- return!
+  if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
+    token = req.headers.authorization.split(" ")[1];
+
+    try {
+      let decoded;
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET);
+      } catch (err) {
+        // Explicitly handle expired token
+        if (err.name === "TokenExpiredError") {
+          return res.status(401).json({
+            success: false,
+            message: "Token expired",
+            code: "TOKEN_EXPIRED",
+            expiredAt: err.expiredAt,
+          });
+        }
+        // Other JWT errors
+        return res.status(401).json({
+          success: false,
+          message: "Not authorized, token invalid",
+          code: "TOKEN_INVALID",
+        });
+      }
+
+      // Try find user first
+      let user = await Userwebapp.findById(decoded.id).select("-password");
+
+      // If not a user, try partner
+      let isPartner = false;
+      if (!user) {
+        user = await Partnerwebapp.findById(decoded.id).select("-password");
+        if (user) isPartner = true;
+      }
+
+      if (!user) {
+        return res.status(401).json({ success: false, message: "Not authorized", code: "NOT_FOUND" });
+      }
+
+      req.user = user;
+      req.isPartner = isPartner;
+      next();
+    } catch (error) {
+      console.error("Auth middleware error:", error);
+      return res.status(401).json({ success: false, message: "Not authorized", code: "AUTH_ERROR" });
+    }
+  } else {
+    return res.status(401).json({ success: false, message: "Not authorized, no token", code: "NO_TOKEN" });
   }
+});
 
-  let decoded;
-  try {
-    decoded = jwt.verify(token, process.env.JWT_SECRET);
-  } catch (err) {
-    return res.status(401).json({ message: "Not authorized, token invalid" }); // <-- return!
+// Middleware to authorize only partners
+const authorizePartner = asyncHandler(async (req, res, next) => {
+  if (!req.isPartner) {
+    return res.status(403).json({ 
+      message: "Not authorized as partner" 
+    });
   }
-
-  // Try user first, then partner
-  let entity =
-    (await Userwebapp.findById(decoded.id).select("-password")) ||
-    (await Partnerwebapp.findById(decoded.id).select("-password"));
-
-  if (!entity) {
-    return res.status(401).json({ message: "Not authorized" }); // <-- return!
-  }
-
-  req.user = entity;
-  req.isPartner = !!(await Partnerwebapp.findById(decoded.id).select("_id"));
   next();
 });
 
-// Only partners
-const authorizePartner = (req, res, next) => {
-  if (!req.isPartner) {
-    return res.status(403).json({ message: "Not authorized as partner" });
+// Middleware to authorize only admin users
+const authorizeAdmin = asyncHandler(async (req, res, next) => {
+  if (!req.user.isAdmin) {
+    return res.status(403).json({ 
+      message: "Not authorized as admin" 
+    });
   }
   next();
-};
+});
 
-// Only admins (of Userwebapp)
-const authorizeAdmin = (req, res, next) => {
-  if (!req.user?.isAdmin) {
-    return res.status(403).json({ message: "Not authorized as admin" });
-  }
-  next();
+module.exports = {
+  authenticate,
+  authorizePartner,
+  authorizeAdmin
 };
-
-module.exports = { authenticate, authorizePartner, authorizeAdmin };
