@@ -1,0 +1,29 @@
+name: Deploy Backend to Server
+
+on:
+  push:
+    branches:
+      - main   # change branch if needed
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup SSH Agent (GitHub -> EC2)
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add GitHub to known hosts
+        run: ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Deploy Backend on EC2 (with ssh-agent forwarding)
+        run: |
+          ssh -A -o StrictHostKeyChecking=no ubuntu@www.mobapi.skillnaav.com << 'EOF'
+            cd /home/ubuntu/
+            ./deploy.sh main
+          EOF
