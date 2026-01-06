@@ -23,7 +23,7 @@ jobs:
 
       - name: Deploy Backend on EC2 (with ssh-agent forwarding)
         run: |
-          ssh -A -o StrictHostKeyChecking=no ubuntu@www.mobapi.skillnaav.com << 'EOF'
+          ssh -A -o StrictHostKeyChecking=no ubuntu@mobapi.skillnaav.com << 'EOF'
             cd /home/ubuntu/
             ./deploy.sh feature/updatedCode
           EOF
