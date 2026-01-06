@@ -3,7 +3,7 @@ name: Deploy Backend to Server
 on:
   push:
     branches:
-      - main   # change branch if needed
+      - feature/updatedCode   # change branch if needed
 
 jobs:
   deploy:
@@ -25,5 +25,5 @@ jobs:
         run: |
           ssh -A -o StrictHostKeyChecking=no ubuntu@www.mobapi.skillnaav.com << 'EOF'
             cd /home/ubuntu/
-            ./deploy.sh main
+            ./deploy.sh feature/updatedCode
           EOF
